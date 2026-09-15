@@ -31,6 +31,8 @@ class ChatResponse(BaseModel):
     product: Optional[Dict[str, Any]] = None
     requirements: List[Dict[str, Any]] = Field(default_factory=list)
     alerts: List[Dict[str, Any]] = Field(default_factory=list)
+    clarifying_questions: List[str] = Field(default_factory=list)
+    suggested_prompts: List[str] = Field(default_factory=list)
 
 
 class ComplianceStatusResponse(BaseModel):
@@ -52,6 +54,11 @@ class ProductDetailResponse(BaseModel):
     standards: List[Dict[str, Any]] = Field(default_factory=list)
     requirements: List[Dict[str, Any]] = Field(default_factory=list)
     current_requirement_status: Dict[str, int] = Field(default_factory=dict)
+    documents: List[Dict[str, Any]] = Field(default_factory=list)
+    tests: List[Dict[str, Any]] = Field(default_factory=list)
+    certifications: List[Dict[str, Any]] = Field(default_factory=list)
+    recommended_actions: List[Dict[str, Any]] = Field(default_factory=list)
+    compliance_readiness: Optional[Dict[str, Any]] = None
     alerts: List[Dict[str, Any]] = Field(default_factory=list)
 
 
@@ -61,3 +68,30 @@ class DashboardStatsResponse(BaseModel):
     active_certifications: int
     critical_alerts: int
     recent_activity: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class CreateProductRequest(BaseModel):
+    product_name: str
+    model_number: str
+    category_code: str = "ELEC"
+    manufacturer_name: str = "Enterprise Manufacturer Pvt Ltd"
+    country_of_origin: str = "India"
+    description: Optional[str] = None
+
+
+class RAGIngestRequest(BaseModel):
+    text: Optional[str] = None
+    source_id: str
+    pdf_path: Optional[str] = None
+
+
+class ComplaintRequest(BaseModel):
+    consumer_name: str
+    consumer_email: str
+    consumer_phone: Optional[str] = None
+    product_name: str
+    brand_or_model: Optional[str] = None
+    licence_number: Optional[str] = None
+    complaint_type: str = "SUBSTANDARD_PRODUCT"
+    description: str
+

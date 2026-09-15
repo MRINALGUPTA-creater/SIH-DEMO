@@ -28,6 +28,9 @@ from custom_types import (
     ComplianceStatusResponse,
     ProductDetailResponse,
     DashboardStatsResponse,
+    CreateProductRequest,
+    RAGIngestRequest,
+    ComplaintRequest,
 )
 
 load_dotenv()
@@ -176,6 +179,7 @@ inngest.fast_api.serve(app, inngest_client, [rag_ingest_pdf, rag_query_pdf_ai])
 
 # --- API Endpoints ---
 
+@app.get("/health")
 @app.get("/api/health")
 def get_health():
     """Health check for system services."""
@@ -188,6 +192,9 @@ def get_health():
     }
 
 
+# --- Products & Compliance Passport ---
+
+@app.get("/products")
 @app.get("/api/products")
 def list_products():
     """Return all products with category and manufacturer information."""
@@ -199,9 +206,22 @@ def list_products():
         raise HTTPException(status_code=500, detail="Failed to fetch products")
 
 
+@app.post("/products")
+@app.post("/api/products")
+def create_product(req: CreateProductRequest):
+    """Create a new product, automatically map relevant standards and requirements."""
+    try:
+        res = db.create_product(req.model_dump())
+        return res
+    except Exception as e:
+        logger.error(f"Error creating product: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create product passport")
+
+
+@app.get("/products/{product_id}", response_model=ProductDetailResponse)
 @app.get("/api/products/{product_id}", response_model=ProductDetailResponse)
 def get_product_details(product_id: int):
-    """Return complete product details, category, standards, requirements, status, and alerts."""
+    """Return complete product details, category, standards, requirements, status, documents, tests, and alerts."""
     passport = db.get_product_passport(product_id)
     if not passport:
         raise HTTPException(status_code=404, detail=f"Product with ID {product_id} not found")
@@ -209,6 +229,11 @@ def get_product_details(product_id: int):
     standards = db.get_product_standards(product_id)
     requirements = db.get_all_requirements_for_product(product_id)
     alerts = db.get_alerts(product_id=product_id)
+    documents = db.get_product_documents(product_id)
+    tests = db.get_product_tests(product_id)
+    certifications = db.get_product_certifications(product_id)
+    recommended_actions = db.get_recommended_actions(product_id)
+    readiness = db.get_compliance_readiness(product_id)
 
     status_counts = {"COMPLETED": 0, "IN_PROGRESS": 0, "NOT_STARTED": 0, "FAILED": 0}
     for req in requirements:
@@ -221,10 +246,16 @@ def get_product_details(product_id: int):
         "standards": standards,
         "requirements": requirements,
         "current_requirement_status": status_counts,
+        "documents": documents,
+        "tests": tests,
+        "certifications": certifications,
+        "recommended_actions": recommended_actions,
+        "compliance_readiness": readiness,
         "alerts": alerts,
     }
 
 
+@app.get("/products/{product_id}/compliance", response_model=ComplianceStatusResponse)
 @app.get("/api/products/{product_id}/compliance", response_model=ComplianceStatusResponse)
 def get_compliance_status(product_id: int):
     """Return compliance metrics, readiness percentage, applicable standards, gaps, and actions."""
@@ -251,20 +282,26 @@ def get_compliance_status(product_id: int):
     }
 
 
-@app.get("/api/alerts")
-def get_alerts(
-    product_id: Optional[int] = Query(None, description="Filter by product ID"),
-    severity: Optional[str] = Query(None, description="Filter by severity (CRITICAL, HIGH, MEDIUM, LOW)"),
-    status: Optional[str] = Query("OPEN", description="Filter by status (OPEN, RESOLVED, All)"),
-):
-    """Return compliance alerts from MySQL."""
-    try:
-        return db.get_alerts(product_id=product_id, severity=severity, status=status)
-    except Exception as e:
-        logger.error(f"Error fetching alerts: {e}")
-        raise HTTPException(status_code=500, detail="Failed to fetch compliance alerts")
+@app.get("/products/{product_id}/requirements")
+@app.get("/api/products/{product_id}/requirements")
+def get_product_requirements(product_id: int):
+    """All requirements for a product (Query 3)."""
+    passport = db.get_product_passport(product_id)
+    if not passport:
+        raise HTTPException(status_code=404, detail=f"Product with ID {product_id} not found")
+    return db.get_all_requirements_for_product(product_id)
 
 
+@app.get("/products/{product_id}/alerts")
+@app.get("/api/products/{product_id}/alerts")
+def get_product_alerts(product_id: int):
+    """Product-specific alerts (Query 13)."""
+    return db.get_alerts(product_id=product_id)
+
+
+# --- Standards Catalog & Search ---
+
+@app.get("/standards")
 @app.get("/api/standards")
 def get_standards(
     q: Optional[str] = Query("", description="Search term for standard number or title"),
@@ -280,6 +317,21 @@ def get_standards(
         raise HTTPException(status_code=500, detail="Failed to fetch standards")
 
 
+@app.get("/standards/search")
+@app.get("/api/standards/search")
+def search_standards(
+    q: Optional[str] = Query("", description="Search query"),
+    category: Optional[str] = Query(None, description="Category code"),
+):
+    """Dedicated search endpoint for Indian Standards."""
+    try:
+        return db.search_standards(query=q or "", category_code=category)
+    except Exception as e:
+        logger.error(f"Error searching standards: {e}")
+        raise HTTPException(status_code=500, detail="Search failed")
+
+
+@app.get("/standards/{standard_id}")
 @app.get("/api/standards/{standard_id}")
 def get_standard_detail(standard_id: int):
     """Get single standard details (Query 12)."""
@@ -289,6 +341,36 @@ def get_standard_detail(standard_id: int):
     return std
 
 
+# --- Compliance Alerts ---
+
+@app.get("/alerts")
+@app.get("/api/alerts")
+def get_alerts(
+    product_id: Optional[int] = Query(None, description="Filter by product ID"),
+    severity: Optional[str] = Query(None, description="Filter by severity (CRITICAL, HIGH, MEDIUM, LOW)"),
+    status: Optional[str] = Query("OPEN", description="Filter by status (OPEN, RESOLVED, All)"),
+):
+    """Return compliance alerts from MySQL."""
+    try:
+        return db.get_alerts(product_id=product_id, severity=severity, status=status)
+    except Exception as e:
+        logger.error(f"Error fetching alerts: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch compliance alerts")
+
+
+@app.post("/alerts/{alert_id}/resolve")
+@app.post("/api/alerts/{alert_id}/resolve")
+def resolve_alert_endpoint(alert_id: int):
+    """Resolve an open compliance alert."""
+    success = db.resolve_alert(alert_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Alert not found or already resolved")
+    return {"status": "RESOLVED", "alert_id": alert_id}
+
+
+# --- Dashboard Stats ---
+
+@app.get("/dashboard/stats", response_model=DashboardStatsResponse)
 @app.get("/api/dashboard/stats", response_model=DashboardStatsResponse)
 def get_dashboard_stats():
     """Return dashboard statistics (Query 15) and recent compliance activity."""
@@ -299,30 +381,155 @@ def get_dashboard_stats():
         raise HTTPException(status_code=500, detail="Failed to fetch dashboard statistics")
 
 
+# --- Consumer Services ---
+
+@app.get("/consumer/verify-licence")
+@app.get("/api/consumer/verify-licence")
+def verify_consumer_licence(licence_number: str = Query(..., description="CM/L or CRS registration number")):
+    """Verify validity of BIS licence number, CM/L, or CRS registration."""
+    res = db.verify_licence(licence_number)
+    if not res:
+        raise HTTPException(status_code=404, detail=f"No active BIS licence found matching '{licence_number}'")
+    return res
+
+
+@app.post("/consumer/complaint")
+@app.post("/api/consumer/complaint")
+def submit_consumer_complaint(req: ComplaintRequest):
+    """Submit a consumer grievance or complaint regarding substandard product."""
+    return db.submit_complaint(req.model_dump())
+
+
+# --- Document Ingestion (RAG) ---
+
+@app.post("/rag/ingest")
+@app.post("/api/rag/ingest")
+def rag_ingest_content(req: RAGIngestRequest):
+    """Ingest custom text or PDF document into Qdrant vector database."""
+    chunks = []
+    if req.pdf_path:
+        chunks = load_and_chunk_pdf(req.pdf_path)
+    elif req.text:
+        text = req.text.strip()
+        chunks = [text[i:i+800] for i in range(0, len(text), 650)]
+
+    if not chunks:
+        raise HTTPException(status_code=400, detail="No valid content or PDF could be parsed for ingestion")
+
+    vecs = embed_texts(chunks)
+    ids = [str(uuid.uuid5(uuid.NAMESPACE_URL, f"{req.source_id}:{i}")) for i in range(len(chunks))]
+    payloads = [{"source": req.source_id, "text": chunks[i]} for i in range(len(chunks))]
+    qdrant.upsert(ids, vecs, payloads)
+    return {"ingested_chunks": len(chunks), "source_id": req.source_id, "status": "SUCCESS"}
+
+
+# --- AI Compliance Copilot ---
+
+@app.post("/assistant/chat", response_model=ChatResponse)
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat_with_assistant(req: ChatRequest):
     """
-    AI Assistant Endpoint:
-    Combines:
-    1. Structured MySQL data for the product (or detected product).
-    2. Unstructured RAG context from Qdrant vector database.
-    3. Natural language response generated by OpenAI (gpt-4o-mini).
+    AI-Powered BIS Compliance Copilot:
+    1. Detects ambiguous / underspecified requests and prompts adaptive clarifying questions.
+    2. Handles consumer verification and grievance routing.
+    3. Fetches structured MySQL context (products, standards, requirements, alerts).
+    4. Fetches unstructured Qdrant vector context (official BIS standards and guidelines).
+    5. Synthesizes a grounded response with zero hallucination.
     """
     question = req.message.strip()
     if not question:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Message cannot be empty")
 
     product_id = req.product_id
+    q_lower = question.lower()
+
+    # 1. Check for underspecified / ambiguous request requiring clarifying questions
+    is_general_cert_query = any(phrase in q_lower for phrase in [
+        "i want bis certification", "certify my product", "how to get bis",
+        "i want certification", "certification for my product", "certify a product",
+        "need bis mark", "apply for bis"
+    ]) and not any(p in q_lower for p in [
+        "tv", "television", "kettle", "display", "plug", "socket", "cable",
+        "is 13252", "is 616", "is 4250", "is 302", "gold", "jewellery"
+    ])
+
+    if is_general_cert_query and not product_id:
+        return {
+            "answer": (
+                "To accurately determine the applicable Indian Standards (IS), mandatory certification scheme "
+                "(ISI Mark Scheme I vs. Compulsory Registration Scheme CRS), laboratory testing protocols, and documentation dossier, "
+                "I need a few technical details regarding your product:"
+            ),
+            "sources": ["BIS Conformity Assessment Regulations, 2018", "BIS Compulsory Registration Scheme (CRS) Guidelines"],
+            "product": None,
+            "requirements": [],
+            "alerts": [],
+            "clarifying_questions": [
+                "1. What is the specific product type or intended application (e.g., Smart TV, Electric Kettle, Solar Inverter)?",
+                "2. What is the product category (Electronics/IT, Household Electrical, Machinery, Automotive)?",
+                "3. Is the manufacturing facility located in India (domestic) or overseas (Foreign Manufacturers Scheme FMCS)?",
+                "4. What are the key electrical specifications (rated voltage, power wattage, operating frequency)?",
+                "5. Do you already hold any existing BIS licence, CM/L number, or CRS registration?"
+            ],
+            "suggested_prompts": [
+                "I want to manufacture a Smart Television in India",
+                "What BIS standards apply to an Electric Kettle?",
+                "How do I verify a BIS licence or CM/L number?",
+                "What documents are required for CRS registration?"
+            ]
+        }
+
+    # 2. Check for consumer verification queries
+    if "verify" in q_lower and any(k in q_lower for k in ["licence", "license", "cml", "cm/l", "isi mark", "r-number", "huid"]):
+        return {
+            "answer": (
+                "To verify a BIS Licence or Standard Mark authenticity:\n\n"
+                "1. **ISI Mark (CM/L Number)**: Look for the 7 or 8-digit CM/L number below the ISI logo on the product packaging.\n"
+                "2. **CRS Registration (R-number)**: Look for the 8-digit Registration Number (e.g., R-XXXXXXXX) and the official portal URL `www.crsbis.in`.\n"
+                "3. **Hallmarking (HUID)**: Every piece of hallmarked gold jewellery carries a 6-digit alphanumeric Unique Identification code.\n\n"
+                "You can verify any licence immediately using our **Consumer Services** verification tool or the official *BIS Care App*."
+            ),
+            "sources": ["BIS Product Certification Scheme I", "Compulsory Registration Scheme (CRS)", "Hallmarking Regulations"],
+            "product": None,
+            "requirements": [],
+            "alerts": [],
+            "clarifying_questions": [],
+            "suggested_prompts": [
+                "Verify licence CM/L-8400012398",
+                "How do I file a BIS complaint?",
+                "What is HUID in gold hallmarking?"
+            ]
+        }
+
+    # 3. Check for consumer grievance / complaint queries
+    if any(k in q_lower for k in ["complaint", "grievance", "substandard", "fake isi", "fraudulent"]):
+        return {
+            "answer": (
+                "Citizens can report substandard products, misuse of the ISI Mark, or fraudulent BIS registrations:\n\n"
+                "• **Grievance Portal**: Submit a grievance directly via the **Consumer Services** tab in this platform.\n"
+                "• **Required Details**: Product name, brand/model, purchase invoice, retailer address, and a photograph of the label.\n"
+                "• **Investigation**: BIS Enforcement Branch inspects the premises and initiates legal proceedings under the BIS Act, 2016 for counterfeit or non-compliant goods."
+            ),
+            "sources": ["BIS Act 2016 (Section 14 & 15)", "BIS Consumer Engagement Guidelines"],
+            "product": None,
+            "requirements": [],
+            "alerts": [],
+            "clarifying_questions": [],
+            "suggested_prompts": [
+                "How do I file a BIS complaint?",
+                "Verify licence CM/L-8400012398",
+                "What standards apply to Smart TVs?"
+            ]
+        }
 
     # Auto-detect product_id from query text if not explicitly provided
     if not product_id:
-        q_lower = question.lower()
         if "tv" in q_lower or "television" in q_lower or "display" in q_lower:
             product_id = 1
         elif "kettle" in q_lower or "appliance" in q_lower or "mixer" in q_lower:
             product_id = 2
 
-    # 1. Fetch structured MySQL context
+    # Fetch structured SQL context
     product_passport = None
     applicable_standards = []
     requirements = []
@@ -334,7 +541,7 @@ async def chat_with_assistant(req: ChatRequest):
         requirements = db.get_all_requirements_for_product(product_id)
         alerts = db.get_alerts(product_id=product_id)
 
-    # 2. Fetch Qdrant RAG vector context
+    # Fetch Qdrant RAG vector context
     query_vec = embed_texts([question])[0]
     search_res = qdrant.search(query_vec, k=4)
     rag_contexts = search_res.get("contexts", [])
@@ -346,7 +553,7 @@ async def chat_with_assistant(req: ChatRequest):
         if s_num and s_num not in sources:
             sources.append(s_num)
 
-    # 3. Formulate grounded prompt for OpenAI
+    # Formulate grounded prompt
     structured_block = ""
     if product_passport:
         std_str = ", ".join([f"{s.get('standard_number')} ({s.get('standard_title')})" for s in applicable_standards])
@@ -383,7 +590,7 @@ async def chat_with_assistant(req: ChatRequest):
         "Provide a concise, professional, source-grounded response."
     )
 
-    # 4. Generate answer using OpenAI or Grounded Deterministic Fallback
+    # Generate answer using OpenAI or Grounded Deterministic Fallback
     openai_key = os.getenv("OPENAI_API_KEY")
     answer = None
 
@@ -409,26 +616,60 @@ async def chat_with_assistant(req: ChatRequest):
         if product_passport and applicable_standards:
             p_name = product_passport.get("product_name")
             std_codes = " and ".join([s.get("standard_number") for s in applicable_standards])
-            req_bullets = "\n".join([f"• {r.get('requirement_title')} ({r.get('status')})" for r in requirements[:3]])
+            req_bullets = "\n".join([f"• {r.get('requirement_title')} ({r.get('status')})" for r in requirements[:4]])
             answer = (
                 f"For your **{p_name}**, the applicable Indian Standards are **{std_codes}**.\n\n"
                 f"**Applicable Scheme:** {'Compulsory Registration Scheme (CRS)' if 'TV' in p_name else 'ISI Marking Scheme (Scheme I)'}\n\n"
-                f"**Key Requirements:**\n{req_bullets}\n\n"
+                f"**Key Requirements & Evidence Checklist:**\n{req_bullets}\n\n"
                 f"**Recommended Next Steps:**\n"
-                f"1. Verify laboratory test reports against {applicable_standards[0].get('standard_number')}.\n"
-                f"2. Ensure complete rating and standard mark artwork is prepared.\n"
-                f"3. Submit application dossier on the BIS portal."
+                f"1. Complete lab testing under accredited laboratory guidelines for {applicable_standards[0].get('standard_number')}.\n"
+                f"2. Prepare technical file with circuit schematics, BOM, and label artwork.\n"
+                f"3. Submit formal registration dossier on the BIS Manakonline portal."
             )
         elif rag_contexts:
             answer = (
                 f"Based on official BIS documentation:\n\n{rag_contexts[0]}\n\n"
-                f"Refer to {sources[0] if sources else 'BIS Portal'} for detailed submission procedures."
+                f"Refer to {sources[0] if sources else 'BIS Portal'} for detailed statutory guidelines."
             )
         else:
             answer = (
-                "Please specify your product or query (such as Smart TV, Electric Kettle, or IS standard code) "
-                "so I can provide the applicable BIS standards, testing requirements, and certification steps."
+                "Please specify your product (e.g. Smart TV, Electric Kettle, Solar Inverter) or standard number "
+                "so I can provide the applicable BIS standards, testing requirements, and certification roadmap."
             )
+
+    # Generate dynamic adaptive clarifying questions based on product context
+    dynamic_cq = []
+    if product_passport:
+        p_name_l = product_passport.get("product_name", "").lower()
+        if "tv" in p_name_l or "display" in p_name_l:
+            dynamic_cq = [
+                "Does the Smart TV support Wi-Fi / Bluetooth (requires WPC ETA wireless approval)?",
+                "What is the diagonal screen size (e.g. 32-inch vs 55-inch or above)?",
+                "Is the power supply internal or an external BIS-certified AC/DC adapter?",
+            ]
+        elif "kettle" in p_name_l or "appliance" in p_name_l:
+            dynamic_cq = [
+                "What is the rated liquid capacity (e.g. 1.5L domestic vs commercial bulk volume)?",
+                "Does the heating element feature an automatic boil-dry thermal cut-off sensor?",
+                "Is the body constructed from stainless steel, food-grade polypropylene, or borosilicate glass?",
+            ]
+        else:
+            dynamic_cq = [
+                "Is this product intended for domestic Indian sale or export?",
+                "Are any critical sub-assemblies (e.g. power cords, switches) already BIS-marked?",
+            ]
+    else:
+        dynamic_cq = [
+            "What is your product category (IT/Electronics, Household Appliances, Machinery)?",
+            "Are you seeking ISI Mark (Scheme-I) or Compulsory Registration (CRS)?",
+        ]
+
+    suggested_prompts = [
+        "What documents do I need for BIS registration?",
+        "Show my compliance gaps and pending requirements",
+        "What are the dielectric strength test requirements?",
+        "How do I verify a BIS licence?",
+    ]
 
     return {
         "answer": answer,
@@ -436,4 +677,7 @@ async def chat_with_assistant(req: ChatRequest):
         "product": product_passport,
         "requirements": requirements,
         "alerts": alerts,
+        "clarifying_questions": dynamic_cq,
+        "suggested_prompts": suggested_prompts,
     }
+

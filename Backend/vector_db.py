@@ -19,7 +19,11 @@ class QdrantStorage:
             # Persistent on-disk vector store in local directory
             storage_path = os.getenv("QDRANT_STORAGE_PATH", os.path.join(os.path.dirname(__file__), "qdrant_storage"))
             os.makedirs(storage_path, exist_ok=True)
-            self.client = QdrantClient(path=storage_path)
+            try:
+                self.client = QdrantClient(path=storage_path)
+            except Exception as e:
+                logger.warning(f"Storage path {storage_path} locked by another process ({e}). Falling back to in-memory Qdrant client.")
+                self.client = QdrantClient(":memory:")
 
         self._ensure_collection()
 
