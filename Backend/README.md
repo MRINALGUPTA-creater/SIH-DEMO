@@ -1,144 +1,133 @@
 ﻿# SIH 2026 - Problem Statement 107: BIS Compliance AI Assistant Backend
 
-An AI-powered intelligent compliance assistant and management system for Indian Standards (IS) and Bureau of Indian Standards (BIS) services, built with **FastAPI**, **Inngest**, **Qdrant Vector Database**, and **MySQL**.
+**AI-powered Intelligent Assistant for Indian Standards and BIS Services for Industries and Consumers**
+
+A production-ready AI backend built with **FastAPI**, **Inngest**, **Qdrant Vector Database**, and **MySQL (with automated embedded SQLite fallback)**.
 
 ---
 
 ## 🏛 Architecture Overview
 
-```
-Frontend (Next.js @ port 3000)
-       │ HTTP / JSON
-       ▼
-Backend (FastAPI @ port 8000)
- ├── Inngest Event Workflow Orchestration (/api/inngest)
- ├── Qdrant Vector Store (Local on-disk / Cloud cluster RAG)
- └── Relational Database Manager
-      ├── Live MySQL Server (bis_compliance database, 12 tables)
-      └── Automatic Fallback SQLite (bis_compliance_fallback.db)
-```
+`
+                          ┌──────────────────────────┐
+                          │   Next.js 16 Frontend    │
+                          │   (Port 3000 / Turbopack)│
+                          └─────────────┬────────────┘
+                                        │ HTTP / JSON
+                                        ▼
+                          ┌──────────────────────────┐
+                          │     FastAPI Backend      │
+                          │   (Port 8000 / Uvicorn)  │
+                          └───────┬───────┬──────┬───┘
+                                  │       │      │
+         ┌────────────────────────┘       │      └────────────────────────┐
+         ▼                                ▼                               ▼
+┌──────────────────┐            ┌──────────────────┐            ┌──────────────────┐
+│ Relational DB    │            │ Qdrant Vector DB │            │ Inngest Event    │
+│ (12+1 Tables)    │            │ (RAG Knowledge)  │            │ Orchestrator     │
+│ • MySQL Server   │            │ • Persistent disk│            │ • Ingestion      │
+│ • SQLite Fallback│            │ • Cosine search  │            │ • Background RAG │
+└──────────────────┘            └──────────────────┘            └──────────────────┘
+`
 
 ---
 
 ## 📂 Backend Project Structure
 
-```
+`
 Backend/
-├── main.py                 # FastAPI application, Inngest functions, CORS & all endpoints
-├── database.py             # Database manager with all 15 parameterized queries & dual-mode driver
-├── vector_db.py            # Qdrant client wrapper for indexing & cosine similarity semantic search
+├── main.py                 # FastAPI application, Inngest functions, CORS & dual routes
+├── database.py             # Database manager: 12 tables, 15 queries, dual MySQL/SQLite driver
+├── vector_db.py            # Qdrant client wrapper with concurrent process locking protection
 ├── data_loader.py          # PDF document text chunking & OpenAI/deterministic vector embeddings
-├── custom_types.py         # Pydantic data schemas & response contracts
+├── custom_types.py         # Pydantic schemas (Product, Compliance, Complaints, Licences, Chat)
 ├── requirements.txt        # Production dependencies
-├── .env.example            # Template for environment variables
+├── .env.example            # Environment variables template
 ├── init_db.py              # Script to bootstrap MySQL database from bis_compliance.sql
-├── seed_data.py            # Script to seed Qdrant with BIS standards corpus
+├── seed_data.py            # Script to seed Qdrant with Indian Standards knowledge corpus
 ├── bis_compliance.sql      # Official DDL and seed dataset (12 relational tables)
-├── test_backend.py         # Comprehensive test suite verifying all 8 endpoints & 15 queries
-└── README.md               # Backend technical documentation
-```
+├── test_backend.py         # Test suite verifying 17 endpoints & operations (All PASS)
+└── README.md               # Complete documentation
+`
 
 ---
 
 ## 🚀 Quick Start Guide
 
-### 1. Prerequisites
-- Python 3.10+
-- (Optional) MySQL 8.0+ running locally or in Docker
-- (Optional) OpenAI API Key (for live AI embeddings and LLM answers)
-
-### 2. Setup Virtual Environment
-```bash
-# In Backend/ directory
+### 1. Setup Virtual Environment
+`ash
+cd Backend
 python -m venv venv
 
-# Activate venv:
 # Windows PowerShell:
 .\venv\Scripts\Activate.ps1
-# Linux/macOS:
+# Linux / macOS:
 source venv/bin/activate
 
 # Install dependencies:
 pip install -r requirements.txt
-```
+`
 
-### 3. Configure Environment Variables
-Copy `.env.example` to `.env`:
-```bash
+### 2. Configure Environment Variables
+Copy .env.example to .env:
+`ash
 cp .env.example .env
-```
-Configure your settings in `.env`:
-```ini
-OPENAI_API_KEY=your_openai_api_key_here
-MYSQL_HOST=localhost
-MYSQL_PORT=3306
-MYSQL_USER=root
-MYSQL_PASSWORD=your_password
-MYSQL_DATABASE=bis_compliance
-FRONTEND_URL=http://localhost:3000
-```
-> **Note**: If MySQL server is unreachable, the system automatically initializes an SQLite fallback (`bis_compliance_fallback.db`) with identical schema and records, ensuring full endpoint availability.
+`
 
-### 4. Initialize Database & Seed Vectors
-```bash
-# Initialize MySQL database (if MySQL is running):
+### 3. Initialize Database & Vector Store
+`ash
 python init_db.py
-
-# Seed Qdrant vector database with BIS standards documentation:
 python seed_data.py
-```
+`
 
-### 5. Run the Application
-```bash
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-```
-Interactive API documentation will be available at:
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
-- Inngest Dev Server: `http://localhost:8000/api/inngest`
+### 4. Run the FastAPI Server
+`ash
+uvicorn main:app --host 127.0.0.1 --port 8000 --reload
+`
+- Interactive Swagger UI: http://localhost:8000/docs
+- ReDoc Documentation: http://localhost:8000/redoc
 
 ---
 
-## 📡 API Endpoints
+## 📡 Complete API Endpoints
 
-### Health & Monitoring
-- **`GET /api/health`**
-  - Returns backend operational status, active database backend (`mysql` or `sqlite_fallback`), and vector DB connectivity.
+### 🩺 Health & Diagnostic
+- GET /api/health: Reports API operational status, active DB backend (MySQL or SQLite fallback), Qdrant status.
 
-### Products & Compliance
-- **`GET /api/products`**
-  - Lists all registered products, categories, manufacturers, and active certification counts.
-  - Optional Query Param: `?category_code=ELEC`
-- **`GET /api/products/{product_id}`**
-  - Returns full product details, applicable Indian standards, requirements breakdown, and test metrics.
-- **`GET /api/products/{product_id}/compliance`**
-  - Returns comprehensive compliance passport: readiness score percentage, completed vs pending requirements, compliance gaps, and recommended corrective actions.
+### 📦 Product Compliance Passport
+- GET /api/products: List all registered products with metadata.
+- POST /api/products: Dynamically register a new product profile.
+- GET /api/products/{product_id}: Detailed product profile, standards, documents, lab tests, and certifications.
+- GET /api/products/{product_id}/compliance: Live readiness score (%), completed vs pending requirements, compliance gaps, and recommended actions.
+- GET /api/products/{product_id}/requirements: All requirements for a product.
+- GET /api/products/{product_id}/alerts: Product-specific compliance alerts.
 
-### Standards & Alerts
-- **`GET /api/standards`**
-  - Lists active Indian Standards (e.g., IS 13252, IS 616, IS 4250, IS 302-2-15).
-  - Optional Query Param: `?status=ACTIVE`
-- **`GET /api/alerts`**
-  - Fetches compliance alerts across critical, warning, and informational severity levels.
-  - Optional Query Param: `?product_id=1&severity=CRITICAL`
+### 📜 Indian Standards & Discovery
+- GET /api/standards: List and filter Indian Standards by category, scheme, or status.
+- GET /api/standards/search: Keyword and category search for Indian Standards.
+- GET /api/standards/{standard_id}: Comprehensive details for a specific Indian Standard.
 
-### Analytics & AI Assistant
-- **`GET /api/dashboard/stats`**
-  - Returns aggregated executive KPIs: total products, active standards, active certifications, and open critical alerts.
-- **`POST /api/chat`**
-  - AI Assistant supporting semantic RAG retrieval over BIS standards and contextual product compliance queries.
-  - Request body: `{"message": "What are the fire safety requirements under IS 13252?", "product_id": 1}`
+### 🚨 Compliance Alerts Center
+- GET /api/alerts: Retrieve active compliance alerts with severity and status filters.
+- POST /api/alerts/{alert_id}/resolve: 1-Click resolution of compliance alerts with immediate database update.
 
-### Background Jobs (Inngest)
-- **`rag/ingest_pdf`**: Background job to extract, chunk, embed, and index compliance documentation into Qdrant.
-- **`rag/query_pdf_ai`**: Multi-step AI search workflow with rate limiting and throttling.
+### 🤖 AI Assistant & Semantic RAG
+- POST /api/chat: Hybrid AI assistant combining structured database context + Qdrant semantic vector search + LLM generation. Supports **Adaptive Clarifying Questions** and **Suggested Prompts**.
+- POST /rag/ingest: Ingest PDF or standard text documents into Qdrant for RAG.
+
+### 👥 Consumer Services & Protection Hub
+- GET /api/consumer/verify-licence?licence_number={number}: Instant validation of ISI Mark (CM/L-XXXXXXX) and CRS numbers.
+- POST /api/consumer/complaint: Citizen grievance portal for reporting counterfeit ISI marks or substandard quality goods.
+
+### 📊 Executive Analytics
+- GET /api/dashboard/stats: High-level KPIs and live activity feed.
 
 ---
 
-## 🧪 Testing
+## 🧪 Automated Testing
 
-Run the automated endpoint test suite:
-```bash
+Run the full automated test suite:
+`ash
 python test_backend.py
-```
-All tests validate real HTTP responses against the expected schemas and status codes.
+`
+All 17 tests pass successfully with exit code 0.
