@@ -441,26 +441,30 @@ class DatabaseManager:
         return self.execute_query(sql, (product_id,))
 
     def get_compliance_gaps(self, product_id: int) -> List[Dict[str, Any]]:
-        """Query 6: Compliance Gaps"""
+        """Query 6: Compliance Gaps (excluding COMPLETED and NOT_APPLICABLE)"""
         sql = """
         SELECT cr.requirement_id, cr.requirement_code, cr.requirement_title, cr.requirement_description, 
                COALESCE(pr.status, 'NOT_STARTED') AS current_status
         FROM product_standards ps
         JOIN compliance_requirements cr ON ps.standard_id = cr.standard_id
         LEFT JOIN product_requirements pr ON cr.requirement_id = pr.requirement_id AND pr.product_id = ps.product_id
-        WHERE ps.product_id = %s AND (pr.status IS NULL OR pr.status != 'COMPLETED');
+        WHERE ps.product_id = %s AND (pr.status IS NULL OR pr.status NOT IN ('COMPLETED', 'NOT_APPLICABLE'));
         """
         return self.execute_query(sql, (product_id,))
 
     def get_compliance_readiness(self, product_id: int) -> Dict[str, Any]:
-        """Query 7: Calculate Compliance Readiness Data"""
+        """Query 7: Calculate Compliance Readiness Data: completed mandatory applicable / total mandatory applicable * 100"""
         sql = """
         SELECT p.product_id, 
                COUNT(cr.requirement_id) AS total_requirements, 
                SUM(CASE WHEN pr.status = 'COMPLETED' THEN 1 ELSE 0 END) AS completed_requirements,
                SUM(CASE WHEN pr.status IN ('NOT_STARTED', 'IN_PROGRESS') THEN 1 ELSE 0 END) AS pending_requirements,
                SUM(CASE WHEN pr.status = 'FAILED' THEN 1 ELSE 0 END) AS failed_requirements,
-               ROUND((SUM(CASE WHEN pr.status = 'COMPLETED' THEN 1 ELSE 0 END) * 100.0) / NULLIF(COUNT(cr.requirement_id), 0), 2) AS readiness_percentage
+               ROUND(
+                   (SUM(CASE WHEN pr.status = 'COMPLETED' AND (cr.mandatory = 1 OR cr.mandatory IS NULL) THEN 1 ELSE 0 END) * 100.0) / 
+                   NULLIF(SUM(CASE WHEN (cr.mandatory = 1 OR cr.mandatory IS NULL) AND (pr.status IS NULL OR pr.status != 'NOT_APPLICABLE') THEN 1 ELSE 0 END), 0),
+                   2
+               ) AS readiness_percentage
         FROM products p
         JOIN product_standards ps ON p.product_id = ps.product_id
         JOIN compliance_requirements cr ON ps.standard_id = cr.standard_id
@@ -501,9 +505,9 @@ class DatabaseManager:
         params = []
 
         if query:
-            conditions.append("(s.standard_number LIKE %s OR s.standard_title LIKE %s OR s.description LIKE %s)")
+            conditions.append("(s.standard_number LIKE %s OR s.standard_title LIKE %s OR s.description LIKE %s OR p.product_name LIKE %s)")
             wild = f"%{query}%"
-            params.extend([wild, wild, wild])
+            params.extend([wild, wild, wild, wild])
 
         if category_code and category_code != "All":
             conditions.append("pc.category_code = %s")
@@ -526,6 +530,14 @@ class DatabaseManager:
         ORDER BY s.standard_number;
         """
         return self.execute_query(sql, tuple(params))
+
+    def filter_standards_by_category(self, category_code: str) -> List[Dict[str, Any]]:
+        """Query 10: Filter Standards by Product Category"""
+        return self.search_standards(category_code=category_code)
+
+    def filter_standards_by_status(self, status: str) -> List[Dict[str, Any]]:
+        """Query 11: Filter Standards by Scheme / Status"""
+        return self.search_standards(status=status)
 
     def get_standard_details(self, standard_id: int) -> Optional[Dict[str, Any]]:
         """Query 12: Standard Details"""
@@ -564,17 +576,23 @@ class DatabaseManager:
         """
         return self.execute_query(sql, tuple(params))
 
-    def get_recent_requirements(self, product_id: int, limit: int = 5) -> List[Dict[str, Any]]:
+    def get_recent_requirements(self, product_id: Optional[int] = None, limit: int = 5, days: Optional[int] = None) -> List[Dict[str, Any]]:
         """Query 14: Recent/Changed Requirements"""
+        conditions = []
+        params = []
+        if product_id:
+            conditions.append("pr.product_id = %s")
+            params.append(product_id)
+        where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
         sql = f"""
         SELECT pr.product_requirement_id, cr.requirement_code, cr.requirement_title, pr.status, pr.updated_at
         FROM product_requirements pr
         JOIN compliance_requirements cr ON pr.requirement_id = cr.requirement_id
-        WHERE pr.product_id = %s 
+        {where_clause}
         ORDER BY pr.updated_at DESC 
         LIMIT {limit};
         """
-        return self.execute_query(sql, (product_id,))
+        return self.execute_query(sql, tuple(params))
 
     def get_dashboard_statistics(self) -> Dict[str, Any]:
         """Query 15: Dashboard Statistics"""

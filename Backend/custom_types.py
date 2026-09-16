@@ -81,7 +81,11 @@ class CreateProductRequest(BaseModel):
 
 class RAGIngestRequest(BaseModel):
     text: Optional[str] = None
-    source_id: str
+    content: Optional[str] = None
+    source_id: Optional[str] = None
+    document_id: Optional[str] = None
+    title: Optional[str] = None
+    source: Optional[str] = None
     pdf_path: Optional[str] = None
 
 

@@ -47,6 +47,10 @@ app = FastAPI(
 origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
 ]
 frontend_env = os.getenv("FRONTEND_URL")
 if frontend_env and frontend_env not in origins:
@@ -54,7 +58,8 @@ if frontend_env and frontend_env not in origins:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all for seamless local dev / network access
+    allow_origins=origins,
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -178,6 +183,17 @@ inngest.fast_api.serve(app, inngest_client, [rag_ingest_pdf, rag_query_pdf_ai])
 
 
 # --- API Endpoints ---
+
+@app.get("/")
+def root():
+    """Root endpoint for API service discovery and demo status."""
+    return {
+        "message": "BIS Compliance Assistant API",
+        "status": "running",
+        "version": "1.0.0",
+        "database": "MySQL (live)" if db.use_mysql else "SQLite (embedded schema compliant)",
+    }
+
 
 @app.get("/health")
 @app.get("/api/health")
@@ -406,21 +422,23 @@ def submit_consumer_complaint(req: ComplaintRequest):
 @app.post("/api/rag/ingest")
 def rag_ingest_content(req: RAGIngestRequest):
     """Ingest custom text or PDF document into Qdrant vector database."""
+    source_id = req.source_id or req.document_id or req.source or req.title or "DOC-CUSTOM"
+    raw_text = req.text or req.content or ""
     chunks = []
     if req.pdf_path:
         chunks = load_and_chunk_pdf(req.pdf_path)
-    elif req.text:
-        text = req.text.strip()
+    elif raw_text:
+        text = raw_text.strip()
         chunks = [text[i:i+800] for i in range(0, len(text), 650)]
 
     if not chunks:
         raise HTTPException(status_code=400, detail="No valid content or PDF could be parsed for ingestion")
 
     vecs = embed_texts(chunks)
-    ids = [str(uuid.uuid5(uuid.NAMESPACE_URL, f"{req.source_id}:{i}")) for i in range(len(chunks))]
-    payloads = [{"source": req.source_id, "text": chunks[i]} for i in range(len(chunks))]
+    ids = [str(uuid.uuid5(uuid.NAMESPACE_URL, f"{source_id}:{i}")) for i in range(len(chunks))]
+    payloads = [{"source": source_id, "text": chunks[i]} for i in range(len(chunks))]
     qdrant.upsert(ids, vecs, payloads)
-    return {"ingested_chunks": len(chunks), "source_id": req.source_id, "status": "SUCCESS"}
+    return {"ingested_chunks": len(chunks), "source_id": source_id, "status": "SUCCESS"}
 
 
 # --- AI Compliance Copilot ---
@@ -522,6 +540,78 @@ async def chat_with_assistant(req: ChatRequest):
             ]
         }
 
+    # 4. Check for documents required for BIS registration query
+    if any(k in q_lower for k in ["what documents", "documents required", "documentation required", "document checklist", "documents for bis", "documents for registration"]):
+        return {
+            "answer": (
+                "For BIS Registration (under Compulsory Registration Scheme CRS or ISI Marking Scheme I), the mandatory documentation checklist includes:\n\n"
+                "1. **Legal Business Proof**: Certificate of Incorporation, Factory / Manufacturing Licence, Partnership Deed or GST Registration.\n"
+                "2. **Authorized Indian Representative (AIR)**: Required for foreign manufacturers with formal Undertaking and RBI permissions.\n"
+                "3. **Accredited Test Reports**: Complete test report issued by a BIS-recognized testing laboratory conforming to applicable Indian Standards.\n"
+                "4. **Technical File & Construction Data**: Circuit schematics, PCB layout, Bill of Materials (BOM) detailing critical safety components.\n"
+                "5. **Brand / Trademark Documentation**: Trademark Registration Certificate or Brand Owner Authorization letter.\n"
+                "6. **Quality Management System (QMS)**: Factory quality-control flow chart, in-house test equipment list with valid calibration certificates.\n"
+                "7. **Product Marking & Artwork**: Draft ISI / CRS Standard Mark label artwork with model designation and rated specifications."
+            ),
+            "sources": [
+                "BIS (Conformity Assessment) Regulations, 2018",
+                "BIS Compulsory Registration Scheme (CRS) Guidelines",
+                "Scheme-I Operational Manual"
+            ],
+            "product": None,
+            "requirements": [],
+            "alerts": [],
+            "clarifying_questions": [
+                "Is your manufacturing facility based in India or overseas (requiring an AIR)?",
+                "Do you have a pre-existing ISO 9001 quality management system certification?",
+                "Are critical safety components (power cords, plugs, internal adapters) already BIS-marked?"
+            ],
+            "suggested_prompts": [
+                "What BIS standards apply to my smart television?",
+                "What are my compliance gaps?",
+                "How do I verify a BIS licence?"
+            ]
+        }
+
+    # 5. Check for compliance gaps query
+    if any(k in q_lower for k in ["compliance gap", "compliance gaps", "what are my gaps", "pending compliance", "gap analysis"]):
+        p_id = product_id or 1
+        p_passport = db.get_product_passport(p_id)
+        p_gaps = db.get_compliance_gaps(p_id)
+        p_actions = db.get_recommended_actions(p_id)
+        p_readiness = db.get_compliance_readiness(p_id)
+        
+        p_name = p_passport.get("product_name") if p_passport else "Demo Smart Television"
+        gap_items = [f"• **{g.get('requirement_code')}** ({g.get('requirement_title')}): Current Status `{g.get('current_status')}`" for g in p_gaps]
+        gaps_text = "\n".join(gap_items) if gap_items else "No critical compliance gaps detected. All mandatory requirements are complete."
+        
+        action_items = [f"- {a.get('requirement_code')}: {a.get('recommended_action')}" for a in p_actions]
+        actions_text = "\n".join(action_items) if action_items else "Proceed to final licence submission."
+
+        return {
+            "answer": (
+                f"### Compliance Gap Analysis for **{p_name}**\n\n"
+                f"**Current Readiness Score:** {p_readiness.get('readiness_percentage', 0)}%\n\n"
+                f"**Identified Compliance Gaps ({len(p_gaps)} pending):**\n"
+                f"{gaps_text}\n\n"
+                f"**Recommended Remediation Actions:**\n"
+                f"{actions_text}"
+            ),
+            "sources": [s.get("standard_number") for s in db.get_product_standards(p_id)] or ["BIS Compliance Database"],
+            "product": p_passport,
+            "requirements": db.get_all_requirements_for_product(p_id),
+            "alerts": db.get_alerts(product_id=p_id),
+            "clarifying_questions": [
+                "Would you like to schedule accredited laboratory testing for pending requirements?",
+                "Do you have existing test evidence to upload for the open technical files?"
+            ],
+            "suggested_prompts": [
+                "What BIS standards apply to my smart television?",
+                "What documents are required for BIS registration?",
+                "How do I verify a BIS licence?"
+            ]
+        }
+
     # Auto-detect product_id from query text if not explicitly provided
     if not product_id:
         if "tv" in q_lower or "television" in q_lower or "display" in q_lower:
@@ -545,13 +635,29 @@ async def chat_with_assistant(req: ChatRequest):
     query_vec = embed_texts([question])[0]
     search_res = qdrant.search(query_vec, k=4)
     rag_contexts = search_res.get("contexts", [])
-    sources = search_res.get("sources", [])
+    rag_sources = search_res.get("sources", [])
+    valid_sources = []
 
     # Include structured standards as sources if present
     for s in applicable_standards:
         s_num = s.get("standard_number")
-        if s_num and s_num not in sources:
-            sources.append(s_num)
+        if s_num and s_num not in valid_sources:
+            valid_sources.append(s_num)
+
+    # Include RAG sources only if explicitly relevant to question, product, or standard
+    for src in rag_sources:
+        if not src:
+            continue
+        src_str = str(src).strip()
+        if (src_str.lower() in question.lower() or 
+            any(src_str.lower() in s.get("standard_number", "").lower() for s in applicable_standards)):
+            if src_str not in valid_sources:
+                valid_sources.append(src_str)
+        elif not product_passport and not applicable_standards:
+            if src_str not in valid_sources:
+                valid_sources.append(src_str)
+
+    sources = valid_sources
 
     # Formulate grounded prompt
     structured_block = ""
